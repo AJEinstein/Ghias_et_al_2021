@@ -1,0 +1,654 @@
+---
+pdf_document:
+  toc: yes
+author: "Andrew D. Johnston"
+date: "12/17/2020"
+output:
+  pdf_document: default
+  css: styles_1.css
+title: Analysis for the manuscript 'Hepcidin levels can distinguish anemia of chronic
+  disease from iron deficiency anemia in a cross-sectional study of hidradenitis suppurativa
+  patients'
+editor_options:
+  chunk_output_type: console
+toc: yes
+toc_depth: 4
+word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80),tidy=TRUE)
+```
+
+```{r functions, echo=FALSE, warning=FALSE, message = FALSE}
+
+# Order correlation matrix
+reorder_cormat <- function(cormat){
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+}
+```
+
+\newpage
+
+This document details the analysis and generation of figures found in . The dataset related to this article can be found at https://data.mendeley.com/datasets/9x4n84cxxw/1, an open-source online data repository hosted at Mendeley Data Ghias, Mondana; Johnston, Andrew; Babbush, Kayla; Cohen, Steven (2020), “Elevated hepcidin in hidradenitis suppurativa”, Mendeley Data, v1 http://dx.doi.org/10.17632/9x4n84cxxw.1. 
+
+#Overview of Analysis
+
+1. Examine the relationship among acute phase reactants, hepcidin, and disease severity (HS-PGA)
+1a. Univariate ordinal regression Hepcidin and HS-PGA
+
+2. Examine the relationship between hepcidin and different anemia classifications.
+
+3. Using Hepcidin to distinguish among IDA, ACD, and ACD/IDA
+
+4. Making Table 1 
+
+5. Making Figure 1
+
+#Curate Data
+
+Load in packages
+
+```{r packages, echo=TRUE, warning=FALSE, message = FALSE}
+# load in libraries
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(reshape2)
+library(ggpubr)
+library(RColorBrewer)
+library(MASS)
+library(AER) 
+library(scales)
+library("flexplot")
+library(overlapping)
+library(lattice)
+library(lubridate)
+library(ROCit)
+library(pROC)
+library(plotROC)
+library(OptimalCutpoints)
+library(cutpointr)
+library(pastecs)
+library(Hmisc)
+library(mblm)
+library(polycor)
+library(psych)
+library(table1)
+library(dunn.test)
+
+# set options
+options(scipen=999, stringsAsFactors = FALSE)
+```
+
+download the data. 
+
+```{r load-data, echo=TRUE, warning=FALSE, message = FALSE}
+hep_dat <- read.csv("Hepcidin Data Reformated_7.31.19.csv", header = T)
+tail(hep_dat[1:132,])
+hep_dat <- hep_dat[1:131,] # remove blanks rows
+hep_dat <- hep_dat[hep_dat$Visit==1,] # use only the 1st visit data
+# removing 1 individual without sufficient data, anemic but no ferritin and tsat data
+hep_dat <- hep_dat[!(hep_dat$Anemic==1 & (is.na(hep_dat$Tsat) | is.na(hep_dat$Ferritin))),] 
+hep_dat$PGA <- as.factor(hep_dat$PGA)
+hep_dat$Gender <- as.factor(hep_dat$Gender)
+hep_dat_3<- hep_dat
+hep_dat_3$Anemic <- as.factor(hep_dat_3$Anemic)
+seq_col <- brewer.pal(6,"YlOrRd")
+hep_dat_4<-hep_dat_3
+hep_dat_4$PGA <- as.numeric(hep_dat_4$PGA)
+```
+
+
+#1 Relationship among hepcidin, acute phase reactants, and disease severity
+
+##1a. Univariate ordinal regression Hepcidin and HS-PGA
+
+Hepcidin levels positively predict HS-PGA in univariate ordinal regression
+
+```{r univar-analyses, echo=TRUE, warning=FALSE, message = FALSE}
+ord_uni_PGA_hep <- polr(PGA~Hepcidin, data=hep_dat, Hess = TRUE)
+coeftest(ord_uni_PGA_hep) 
+summary(ord_uni_PGA_hep)
+## store table
+(tab_ord_PGA_hep <- coef(summary(ord_uni_PGA_hep)))
+## calculate and store p values
+p_ord_PGA_hep <- pnorm(abs(tab_ord_PGA_hep[, "t value"]), lower.tail = FALSE) * 2
+## combined table
+(tab_ord_PGA_hep <- cbind(tab_ord_PGA_hep, "p value" = p_ord_PGA_hep))
+## odds ratio
+exp(coef(ord_uni_PGA_hep))
+## odds ratio with 95% CI
+c(exp(coef(ord_uni_PGA_hep)), exp(confint(ord_uni_PGA_hep)))
+
+# Hepcidin and Hurley
+table(hep_dat$Hurley)
+
+```
+
+##1b. Correlation among quantitive factors 
+
+Age, BMI, Hb, MCV, PLT,Fe, Hepcidin, Ferritin, CRP, ESR, Tsat, Transferrin are the factors for which we have data points. First, we will assess the distribution of the variables; Only MCV and Transferrin are normally distributed; therefore, will use pearson correlation test (http://www.sthda.com/english/wiki/normality-test-in-r).
+
+```{r normality, echo=TRUE, warning=FALSE, message = FALSE}
+colnames(hep_dat)
+# Age, BMI, Hb, MCV, PLT,Fe, Hepcidin, Ferritin,CRP, ESR, Tsat, Transferrin
+hep_dat_quant <- hep_dat[,c(4,6,8,10:14,16,18,21:22)]
+tail(hep_dat_quant)
+dim(hep_dat_quant)
+
+l_qqplot <- list()
+for (i in 1:ncol(hep_dat_quant)){
+  l_qqplot[[i]] <- ggqqplot(hep_dat_quant[,i])
+  names(l_qqplot)[i] <- colnames(hep_dat_quant)[i]
+}
+l_qqplot[[4]] # MCV 
+l_qqplot[[12]] # transferrin
+
+shapiro_tests<-NULL
+for (i in 1:ncol(hep_dat_quant)){
+  shapiro_tests[i] <- unlist(shapiro.test(hep_dat_quant[,i])[2])
+  names(shapiro_tests)[i] <- colnames(hep_dat_quant)[i]
+}
+which(shapiro_tests > 0.05)
+```
+
+Will graphically represent the correlation among factors 
+
+```{r heatmap, echo=TRUE, warning=FALSE, message = FALSE}
+
+cormat_quant <- rcorr(x = as.matrix(hep_dat_quant), type="spearman")
+cormat_quant <- round(cormat_quant$r,2)
+
+# make corelations between HS-PGA and other variables
+cor_hspga <- NULL
+j<-1
+for (i in c(4,6,8,10:14,16,18,21:22)) {
+  temp <- rcorr(hep_dat$PGA, hep_dat[,i], type = "spearman") # 0.7226236
+  cor_hspga <- c(cor_hspga,temp$r[1,2])
+  names(cor_hspga)[j] <- colnames(hep_dat)[i]
+  j<-j+1
+}
+cor_hspga
+
+cormat_all <- rbind(cormat_quant, cor_hspga)
+cormat_all <- cbind(cormat_all, c(cor_hspga,1))
+
+#round
+cormat_all <- round(cormat_all,2)
+
+#fix names
+rownames(cormat_all)[13] <- "HS-PGA"
+colnames(cormat_all)[13] <- "HS-PGA"
+
+
+# Reorder the correlation matrix
+cormat <- reorder_cormat(cormat_all)
+# make lower triangle
+upper_tri <- get_upper_tri(cormat)
+
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+# Print the heatmap
+print(ggheatmap)
+
+# labeled heatmap
+ggheatmap_labeled <- ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+print(ggheatmap_labeled)
+
+ggheatmap_ordered_notext <- ggheatmap + 
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+print(ggheatmap_ordered_notext)
+
+# supervised clustering to more easily see hepcidin's relationships with other variables
+cormat <- reorder_cormat(cormat_all)
+rownames(cormat)
+
+# Hepcidin, ferritin, CRP, HS-PGA, ESR, Age, BMI, PLT, Tsat MCV, Hb, Fe, Transferrin
+cormat_hep <- cormat[c(6:7,3,2,4,5,12,1,11,8:10,13),c(6:7,3,2,4,5,12,1,11,8:10,13)] 
+upper_tri_cormat_hep <- get_upper_tri(cormat_hep)
+melted_cormat_hep <- melt(upper_tri_cormat_hep, na.rm = TRUE)
+
+
+# Create a ggheatmap
+ggheatmap_cormat <- ggplot(melted_cormat_hep, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+# Print the heatmap
+print(ggheatmap_cormat)
+
+ggheatmap_supervised_notext <- ggheatmap_cormat + 
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+print(ggheatmap_supervised_notext)
+
+#Correlations with Acute phase reactants:
+  # Positive - CRP, ferritin, Hepcidin
+  # Negative - Transferrin
+```
+
+Ferritin and hepcidin levels are strongly correlated (.73). Hepcidin levels also correlate with markers of inflammation (CRP, r=0.49) and disease-severity (HS-PGA, r=0.45). Of note, hepcidin levels do not reach the r=0.30 cutoff for ESR (r=0.28); perhaps showing that hepcidin is more affected by acute rather chronic inflammation. 
+
+##1c. Correlation among quantitive factors 
+
+Using univariate analysis, do any variables seem to influence hepcidin levels? Checked with non-parametric linear regression using Siegel method (as hepcidin distribution contains outliers) as follows:
+
+```{r hep-univariate, echo=TRUE, warning=FALSE, message = FALSE}
+
+results_hep_mblm <-NULL
+j<-1
+for(i in c(1:6,8:ncol(hep_dat_quant))){
+  col_nam <- colnames(hep_dat_quant)[i]
+  hep_no_na <- hep_dat[!is.na(hep_dat[,i]),]
+  m2 <- mblm(as.formula(paste0("Hepcidin","~",col_nam)), data=hep_no_na, repeated = TRUE)
+  results_hep_mblm <- rbind(results_hep_mblm,summary(m2)$coefficients[2,])
+  rownames(results_hep_mblm)[j] <- col_nam
+  j<-j+1
+}
+results_hep_mblm
+# Hepcidin not affected by BMI
+
+# Obesity
+# how many patients were obese?
+mean(!is.na(hep_dat$BMI))
+mean(hep_dat$BMI>30, na.rm=TRUE) #65%
+wilcox.test(hep_dat$Hepcidin[hep_dat$BMI>=30], hep_dat$Hepcidin[hep_dat$BMI<30])
+# No statistically significant difference
+
+
+# what about non-continuous value, such as sex of individual
+biserial(hep_dat$Hepcidin, hep_dat$Gender)
+# -0.1007311
+# no correlation.
+
+wilcox.test(hep_dat$Hepcidin[hep_dat$Gender==0], hep_dat$Hepcidin[hep_dat$Gender==1])
+# statistically significant difference
+fig_hep_sex <- ggplot(hep_dat, aes(x=Gender, y=Hepcidin, fill=PGA)) + 
+geom_dotplot(binaxis='y', stackdir='center',
+               stackratio=1, dotsize=1, col=NA, position = position_jitterd(width = NULL, height = NULL, quad.points = 100, seed = NA)) +
+  scale_fill_manual(values=seq_col) +
+  theme_minimal() + 
+  stat_summary(data = hep_dat_3, mapping = aes(x=as.numeric(Gender), y=Hepcidin), fun.y= "median", geom="point", color="black", inherit.aes = FALSE, shape = 95, size=20) +
+  ggtitle("") +
+scale_x_discrete( labels = c("0" = "Male","1"="Female"))
+fig_hep_sex
+
+#Though the dataset has a majority females.
+table(hep_dat$Gender)
+```
+
+#2 Relationship between Hepcidin and Anemia 
+
+##2a. Hepcidin levels in anemia vs. non-anemic
+
+```{r hepcidin-anemia-plot, echo=TRUE, warning=FALSE, message = FALSE}
+hep_dat_3<- hep_dat
+hep_dat_3$Anemic <- as.factor(hep_dat_3$Anemic)
+
+seq_col <- brewer.pal(6,"YlOrRd")
+
+fig_hep_anemia <- ggplot(hep_dat_3, aes(x=Anemic, y=Hepcidin, fill=PGA)) + 
+geom_dotplot(binaxis='y', stackdir='center',
+               stackratio=1, dotsize=1, col=NA, position = position_jitterd(width = NULL, height = NULL, quad.points = 100, seed = NA)) +
+  scale_fill_manual(values=seq_col) +
+  theme_minimal() + 
+  stat_summary(data = hep_dat_3, mapping = aes(x=as.numeric(Anemic), y=Hepcidin), fun.y= "median", geom="point", color="black", inherit.aes = FALSE, shape = 95, size=20) +
+  ggtitle("") +
+scale_x_discrete( labels = c("0" = "No","1"="Yes"))
+fig_hep_anemia
+
+# is the hepcidin level significantly different 
+wilcox.test(hep_dat_3$Hepcidin[hep_dat_3$Anemic=="0"],
+            hep_dat_3$Hepcidin[hep_dat_3$Anemic=="1"], conf.int=TRUE)
+```
+
+##2b. Hepcidin levels predicting anemia
+
+Likely driven by the high number of ACD individuals (who would have elevated hepcidin)
+
+```{r anemia-hep-regress, echo=TRUE, warning=FALSE, message = FALSE}
+binom_anemia_hep <- glm(Anemic ~ Hepcidin, family=binomial(link='logit'), data=hep_dat)
+
+summary(binom_anemia_hep)
+anova(binom_anemia_hep, test="Chisq")
+# Hepcidin   1   9.6192       112     146.69 0.001926 **
+confint(binom_anemia_hep)
+exp(coef(binom_anemia_hep)) # exponentiated coefficients
+exp(confint(binom_anemia_hep)) # 95% CI for exponentiated coefficients
+predict(binom_anemia_hep, type="response") # predicted values
+residuals(binom_anemia_hep, type="deviance") # residuals
+```
+
+##2c. Prevalence of anemia and iron deficiency 
+
+As previously found in Tennant et al. (1968), there is a high proportion of anemia in our cohort (43%). Tennant et al. (1968) examined 42 patients, finding 10 had "marked" anemia (Hb <10). Additionally, the found ESR to elevated but only had results for 13 patients (11/13 had elevated ESR). Though a large cross-sectional study in Denmark (Miller et al. 2016) demonstrated no difference in Hb level after age-sex-smoking-adjusted analyses between HS patients and 20,780 of the general population. Though it should be noted that they only found 4.65% of their HS patients to have anemia. Another European (Poland) study,  Ponikowska et al 2020 only found 3 HS patients (3/74; 4%) to have anemia. 
+
+Our high prevalence may be present in the Bronx
+
+```{r anemia-prev, echo=TRUE, warning=FALSE, message = FALSE}
+table(hep_dat$Anemic)
+prop.table(table(hep_dat$Anemic)) #43% of our population
+```
+
+A recent (2020) study, Ponikowska et al 2020 "Deranged Iron Status Evidenced by Iron Deficiency Characterizes Patients with Hidradenitis Suppurativa" defined iron deficiency as ferrtin <100ug/L or ferritin 100-299 with TSat <20%. They found that 75% of their population met iron deficient criteria.
+
+```{r Ponikowska-compare, echo=TRUE, warning=FALSE, message = FALSE}
+# unfortunately, missing ferritin and Tsat information for 9 non-anemic individuals 
+sum(is.na(hep_dat$Ferritin)) #7 
+sum(is.na(hep_dat$Tsat)) #9 
+
+hep_dat_compare <- hep_dat[which(!(is.na(hep_dat$Tsat) | is.na(hep_dat$Ferritin))),]
+nrow(hep_dat_compare) #104
+
+# Ponikowska study
+hep_dat_compare$Ponikowska <- 0
+hep_dat_compare$Ponikowska[which(hep_dat_compare$Ferritin<100)] <- 1
+hep_dat_compare$Ponikowska[which(hep_dat_compare$Ferritin<299 & hep_dat_compare$Tsat<20)] <- 1
+
+sum(hep_dat_compare$Ponikowska==1) # 89 individuals
+prop.table(table(hep_dat_compare$Ponikowska==1))
+# 85.57692 % of patient are iron deficient as defined by parameters in the Ponikowska study
+```
+
+##2d. Classifying anemia in our cohort
+
+Prior studies classified IDA, IDA/ACD, ACD by the following:
+
+**IDA**
+1) absence of inflammation
+AND
+2) i. T‐sat <20% and ferritin <30 ug/l (van Santen et al, 2011; Scholz et al, 2019)
+OR ii. sTfR‐index >=1 mg/ug (van Santen et al, 2011)
+OR iii. T‐sat levels <15% together with ferritin <50 ug/l and MCH in the lowest quintile (Scholz et al, 2019 as Thurnnham et al. 2010 showed that mean ferritin concentrations that were 50% (P , 0.001) and 38% (P , 0.002) higher when CRP and AGP were elevated by inflammation, respectively)
+
+**Inflammation** was defined in prior studies as: 
+1) RA study, inflammation solely by CRP >10 mg/ml (1mg/L) OR DAS28-ESR (Scholz et al, 2019) 
+2) RA study, active inflammation (defined as a CRP level of >= 10 mg/ml or an ESR of >= 30 mm/hour) (van Santen et al, 2011; Khalaf et al.[30996848])
+3) IBD study, only using CRP > 5 mg/ml AND clinical disease activity indices, CDAI (Crohn's disease activity index) for CD and MTWAI (Modified Truelove and Witts activity index) for UC (Mecklenburg et al.)
+
+**ACD** 
+was defined as the following in van Santen et al, 2011:
+1) Presence of inflammation
+2) i. transferrin saturation <20% and ferritin level >=100 g/ml
+OR ii. sTfR index < 1 mg/micro-g and ferritin level >=30 micro-g/ml
+
+**IDA/ACD**
+1) Presence of inflammation
+2) i. ferritin < 100 ng/mL and Tsat < 20%
+OR ii. 2) sTfR index 1 mg/micro-g.
+
+Notes:
+ESR 30 is the upper limit of normal for women.
+
+Our CRP classifiation was as follows:
+CRP 0 <1 mg/dL
+CRP 1 1-5 mg/dL
+CRP 2 >5 mg/dL
+
+Total body iron stores were classified by ferritin class (0 for ferritin<20; 1 for 20=<ferritin<200; 2 for ferritin>=200). 
+
+Our criteria:
+IDA 
+1) absence of inflammation (CRP <10 mg/mL or ESR <50))
+AND
+2) i. T‐sat <20% and ferritin <30 ug/l 
+OR ii. T‐sat levels <15% together with ferritin <50 ug/l
+
+ACD
+1) Presence of inflammation (CRP >=10 mg/mL or ESR >=50)
+2) i. transferrin saturation <20% and ferritin level >=100 g/ml
+OR ii. Ferritin level >= 200 g/mL
+
+IDA/ACD
+1) Presence of inflammation (CRP >=10 mg/mL or ESR >=50)
+2) ferritin < 100 ng/mL and Tsat < 20%
+
+```{r anemia-class, echo=TRUE, warning=FALSE, message = FALSE}
+# Determining anemic status 
+anemia_dat <- hep_dat
+anemia_dat$anemia_type <- "Not anemic"
+
+# IDA ferritin <30 ug/l 
+anemia_dat$anemia_type[which(anemia_dat$Anemic==1 & ((anemia_dat$Ferritin<30)))] <- "IDA"
+nrow(anemia_dat[anemia_dat$anemia_type=="IDA",]) #10
+
+## defining inflammation
+#ACD
+anemia_dat$anemia_type[which(anemia_dat$Anemic==1 & (anemia_dat$CRP.class>=1 | anemia_dat$ESR>=50) &
+                               ((anemia_dat$Tsat<20 & anemia_dat$Ferritin>=100) | anemia_dat$Ferritin>=200 ))] <- "ACD"
+nrow(anemia_dat[anemia_dat$anemia_type=="ACD",]) #7 
+
+#ACD/IDA
+anemia_dat$anemia_type[which(anemia_dat$Anemic==1 & (anemia_dat$CRP.class>=1 | anemia_dat$ESR>=50) &
+                               anemia_dat$Tsat<20 & anemia_dat$Ferritin<100)] <- "ACD/IDA"
+nrow(anemia_dat[anemia_dat$anemia_type=="ACD/IDA",]) # 26
+
+# Other anemia 
+anemia_dat$anemia_type[which(anemia_dat$anemia_type=="Not anemic" & anemia_dat$Anemic==1)] <- "Other anemia"
+
+table(anemia_dat$anemia_type)
+prop.table(table(anemia_dat$anemia_type[anemia_dat$Anemic==1]))
+
+anemia_dat$anemia_type <- factor(anemia_dat$anemia_type, levels = c("IDA", "ACD/IDA", "ACD", "Other anemia", "Not anemic"))
+table(anemia_dat$Ferritin.class)
+anemia_dat$CRP_class <- anemia_dat$CRP.class
+fig_hep_anemia_type <- ggplot(anemia_dat, aes(x=anemia_type, y=Hepcidin, col=PGA, shape=as.factor(Ferritin.class))) + 
+  #geom_dotplot(binaxis='y', stackdir='center',
+  #           stackratio=1, dotsize=.75, col=NA, position = position_jitterd(width = .2, height = NULL, quad.points = 100,   #seed = NA)) +
+  stat_summary(data = anemia_dat, mapping = aes(x=anemia_type, y=Hepcidin), fun.y= "median", geom="point", color="black", inherit.aes = FALSE, shape = 95, size=20) +
+  geom_point(position = position_jitterd(width = .3, height = NULL, quad.points = 100,   seed = NA)) +
+  scale_color_manual(values=seq_col) +
+  theme_minimal() + 
+  ggtitle("") +
+  scale_y_continuous(trans='log2')
+fig_hep_anemia_type
+```
+
+#3 Using anemia to distinguish anemia type
+
+##3a Hepcidin distinguishes ACD/IDA and ACD
+First, we will examine the ability of hepcidin to discern between ACD/IDA and ACD
+
+```{r roc-plot-1, echo=TRUE, warning=FALSE, message = FALSE}
+# ROC of IDA/ACD vs ACD
+anemia_dat_roc_1 <- anemia_dat[(anemia_dat$anemia_type=="ACD/IDA" | anemia_dat$anemia_type=="ACD"),]
+anemia_dat_roc_1$anemia_type <- factor(anemia_dat_roc_1$anemia_type, levels = c("ACD/IDA", "ACD"))
+
+rocfit_1 <- pROC::roc(anemia_dat_roc_1$anemia_type, anemia_dat_roc_1$Hepcidin)
+pROC::auc(rocfit_1)
+youden_coord_1 <- pROC::coords(rocfit_1, x = "b")
+
+rocplot_1 <- ggplot(anemia_dat_roc_1, aes(m = Hepcidin, d = as.numeric(anemia_type))) + 
+  geom_roc(n.cuts=0)
+rocplot_1 <- rocplot_1 + 
+  style_roc(theme = theme_minimal, xlab = "1 - Specificity", ylab = "Sensitivity") +
+  annotate("text", x = .75, y = .25, 
+           label = paste("AUC =", round(calc_auc(rocplot_1)$AUC, 2)))  +
+  geom_point(aes(x=1-youden_coord_1$specificity, y=youden_coord_1$sensitivity), colour="red")+
+  geom_abline(slope=1, intercept=0, lty="dashed")+
+  ggtitle("ACD v ACD/IDA")
+rocplot_1
+
+# examining other ROC package visulaizations and computing bootstrapped calculations of the youden index.
+roc_1 <- rocit(score = anemia_dat_roc_1$Hepcidin, class = anemia_dat_roc_1$anemia_type,
+                       negref = "ACD/IDA") 
+plot(roc_1, values=TRUE)
+
+set.seed(200)
+ciAUC_boot_1 <- ciAUC(roc_1, level = 0.90, nboot = 1000)
+print(ciAUC_boot_1)
+youden_coord_1
+opt_cut_1 <- cutpointr(anemia_dat_roc_1, Hepcidin, anemia_type, boot_runs = 1000)
+plot_cut_boot(opt_cut_1)+theme_minimal()
+```
+
+##3a Hepcidin distinguishes IDA and ACD/IDA
+
+Second, we will examine the ability of hepcidin to discern between IDA and ACD/IDA
+
+```{r roc-plot-2, echo=TRUE, warning=FALSE, message = FALSE}
+# ROC of IDA/ACD vs IDA
+anemia_dat_roc_4 <- anemia_dat[(anemia_dat$anemia_type=="ACD/IDA" | anemia_dat$anemia_type=="IDA"),]
+anemia_dat_roc_4$anemia_type <- factor(anemia_dat_roc_4$anemia_type, levels = c("IDA", "ACD/IDA"))
+
+rocfit_4 <- pROC::roc(anemia_dat_roc_4$anemia_type, anemia_dat_roc_4$Hepcidin)
+pROC::auc(rocfit_4)
+youden_coord_4 <- pROC::coords(rocfit_4, x = "b")
+
+rocplot_4 <- ggplot(anemia_dat_roc_4, aes(m = Hepcidin, d = as.numeric(anemia_type))) + 
+  geom_roc(n.cuts=0)
+rocplot_4 <- rocplot_4 + 
+  style_roc(theme = theme_minimal, xlab = "1 - Specificity", ylab = "Sensitivity") +
+  annotate("text", x = .75, y = .25, 
+           label = paste("AUC =", round(calc_auc(rocplot_4)$AUC, 2)))  +
+  geom_point(aes(x=1-youden_coord_4$specificity, y=youden_coord_4$sensitivity), colour="red")+
+  geom_abline(slope=1, intercept=0, lty="dashed")+
+  ggtitle("ACD v ACD/IDA")
+rocplot_4
+
+# examining other ROC package visulaizations and computing bootstrapped calculations of the youden index.
+roc_4 <- rocit(score = anemia_dat_roc_4$Hepcidin, class = anemia_dat_roc_4$anemia_type,
+                       negref = "IDA") 
+plot(roc_4, values=TRUE)
+set.seed(200)
+ciAUC_boot_4 <- ciAUC(roc_4, level = 0.90, nboot = 1000)
+print(ciAUC_boot_4)
+youden_coord_4
+opt_cut_4 <- cutpointr(anemia_dat_roc_4, Hepcidin, anemia_type, boot_runs = 1000)
+plot_cut_boot(opt_cut_4)+theme_minimal()
+```
+
+#4 Making Demographic/blood parameter panel table 
+
+This code chunk is not evaluated but kept for reference for how Table1 was generated.
+```{r table-1, echo=TRUE, warning=FALSE, message = FALSE, eval=FALSE}
+tab1_dat<-anemia_dat
+
+tab1_dat$Gender <- factor(tab1_dat$Gender, levels = c(0,1), labels = c("Male", "Female"))
+label(tab1_dat$Gender) <- "Sex"
+units(tab1_dat$Age) <- "Years"
+tab1_dat$Race <- factor(tab1_dat$Race, levels=c(1,0,2,3), labels = c("African-American","Caucasian", "Other","Unavailable/Declined"))
+label(tab1_dat$Race) <- "Race"
+tab1_dat$PGA <- factor(tab1_dat$PGA, levels=c(0,1,2,3,4,5), labels = c("Clear (0)", "Minimal (1)", "Mild (2)", "Moderate (3)", "Severe (4)", "Very Severe (5)"))
+label(tab1_dat$PGA) <- "HS-PGA score"
+units(tab1_dat$Hepcidin) <- "ng/mL"
+
+units(tab1_dat$Hb) <- "g/dL"
+units(tab1_dat$MCV) <- "fL"
+units(tab1_dat$PLT) <- "K/uL"
+units(tab1_dat$Fe) <- "ug/dL"
+units(tab1_dat$Transferrin) <- "mg/dL"
+units(tab1_dat$Tsat) <- "%"
+units(tab1_dat$Ferritin) <- "ng/mL"
+units(tab1_dat$CRP) <- "mg/dL"
+units(tab1_dat$ESR) <- "mm/h"
+
+table1(~ Gender + Age + Race + PGA + Hb + MCV + PLT + Fe + Transferrin + Tsat + Ferritin + CRP + ESR | anemia_type, data=tab1_dat, overall="Overall", cont.rmstat=list(c("miss")))
+
+rndr <- function(x, name, ...) {
+    if (!is.numeric(x)) return(render.categorical.default(x))
+    what <- "Median [Min, Max]"
+    parse.abbrev.render.code(c("", what))(x)
+}
+
+table1(strata, labels, groupspan=c(1, 3, 1),
+       render.continuous=c(.="Mean (CV%)", .="Median [Min, Max]",
+                           "Geo. mean (Geo. CV%)"="GMEAN (GCV%)"))
+
+table1(~ Gender + Age + Race + PGA + Hb + MCV + PLT + Fe + Transferrin + Tsat + Ferritin + CRP + ESR | anemia_type, data=tab1_dat, overall="Overall", render = rndr)
+
+table1(~ Gender + Age + BMI+ Race + PGA + Hb + MCV + PLT + Fe + Transferrin + Tsat + Ferritin + CRP + ESR | anemia_type, data=tab1_dat, overall="Overall", render.continuous=c(.="Median [Q1, Q3]"))
+```
+
+#5 Figure 1A
+
+This code chunk creates figure 1 Hepcidin levels by anemia type and performs Kruskal-Wallis ANOVA with Dunn’s multiple comparisons test. 
+```{r fig-1, echo=TRUE, warning=FALSE, message = FALSE}
+anemia_dat_fig1 <- anemia_dat[!(anemia_dat$anemia_type=="Other anemia"),]
+
+# Obtain signficiance 
+dunn.test(anemia_dat_fig1$Hepcidin, g=anemia_dat_fig1$anemia_type, method="bonferroni", kw=TRUE, label=TRUE,
+          wrap=FALSE, table=TRUE, list=FALSE, rmc=FALSE, alpha=0.05, altp=FALSE)
+
+fig_1 <- ggplot(anemia_dat_fig1, aes(x=anemia_type, y=Hepcidin, col=PGA, shape=as.factor(Ferritin.class))) + 
+  #geom_dotplot(binaxis='y', stackdir='center',
+  #           stackratio=1, dotsize=.75, col=NA, position = position_jitterd(width = .2, height = NULL, quad.points = 100,   #seed = NA)) +
+  stat_summary(data = anemia_dat_fig1, mapping = aes(x=anemia_type, y=Hepcidin), fun.y= "median", geom="point", color="black", inherit.aes = FALSE, shape = 95, size=20) +
+  geom_point(size=2.5, position = position_jitterd(width = .4, height = NULL, quad.points = 100,   seed = NA)) +
+  scale_color_manual(values=seq_col) +
+  ylab("Hepcidin (ng/mL)") +
+  xlab("Anemia Type") +
+  theme_minimal() + 
+  ggtitle("") +
+  scale_y_continuous(trans='log2')
+fig_1
+```
+
+Session Information:
+```{r session-Info, echo=TRUE, warning=FALSE, message = FALSE}
+sessionInfo()
+```
